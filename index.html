@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive 3D Heart - Hand Tracking</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+        }
+
+        #container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+
+        #canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        #video {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 200px;
+            height: 150px;
+            border: 2px solid white;
+            border-radius: 8px;
+            background: black;
+        }
+
+        #info {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 15px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        #status {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 13px;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <canvas id="canvas"></canvas>
+        <video id="video" autoplay playsinline></video>
+        <div id="status">Loading...</div>
+        <div id="info">
+            <strong>3D Interactive Heart</strong><br>
+            Move your hand close → Heart contracts<br>
+            Move your hand away → Heart expands<br>
+            Use mouse to rotate view
+        </div>
+    </div>
+
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
+    <!-- MediaPipe Hand Tracking -->
+    <script type="module">
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9";
+
+        let scene, camera, renderer, heart;
+        let handLandmarker;
+        let handDetected = false;
+        let closestHandDistance = Infinity;
+        let targetScale = 1;
+        let currentScale = 1;
+
+        // Initialize Three.js scene
+        function initThreeJS() {
+            const canvas = document.getElementById('canvas');
+            
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a0033);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 5;
+
+            renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xff6b9d, 0.8);
+            scene.add(ambientLight);
+
+            const pointLight = new THREE.PointLight(0xff1493, 1.5);
+            pointLight.position.set(5, 5, 5);
+            scene.add(pointLight);
+
+            const pointLight2 = new THREE.PointLight(0xff69b4, 1);
+            pointLight2.position.set(-5, -5, 5);
+            scene.add(pointLight2);
+
+            // Create heart
+            createHeart();
+
+            // Handle window resize
+            window.addEventListener('resize', onWindowResize);
+
+            // Mouse controls
+            setupMouseControls();
+
+            animate();
+        }
+
+        function createHeart() {
+            const heartShape = new THREE.Shape();
+            
+            // Create heart curve
+            const x = 0, y = 0;
+            heartShape.moveTo(x + 25, y + 25);
+            heartShape.bezierCurveTo(x + 25, y + 25, x + 20, y, x + 0, y);
+            heartShape.bezierCurveTo(x - 30, y, x - 30, y + 35, x - 30, y + 35);
+            heartShape.bezierCurveTo(x - 30, y + 55, x - 10, y + 77, x + 25, y + 95);
+            heartShape.bezierCurveTo(x + 60, y + 77, x + 80, y + 55, x + 80, y + 35);
+            heartShape.bezierCurveTo(x + 80, y + 35, x + 80, y, x + 50, y);
+            heartShape.bezierCurveTo(x + 35, y, x + 25, y + 25, x + 25, y + 25);
+
+            const geometry = new THREE.ExtrudeGeometry(heartShape, {
+                depth: 8,
+                bevelEnabled: true,
+                bevelThickness: 2,
+                bevelSize: 2,
+                bevelSegments: 3
+            });
+
+            geometry.center();
+
+            const material = new THREE.MeshStandardMaterial({
+                color: 0xff1493,
+                emissive: 0xff69b4,
+                emissiveIntensity: 0.3,
+                metalness: 0.3,
+                roughness: 0.4
+            });
+
+            heart = new THREE.Mesh(geometry, material);
+            heart.scale.set(0.03, 0.03, 0.03);
+            scene.add(heart);
+        }
+
+        function setupMouseControls() {
+            let isDragging = false;
+            let previousMousePosition = { x: 0, y: 0 };
+
+            document.addEventListener('mousedown', (e) => {
+                isDragging = true;
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (isDragging && heart) {
+                    const deltaX = e.clientX - previousMousePosition.x;
+                    const deltaY = e.clientY - previousMousePosition.y;
+
+                    heart.rotation.y += deltaX * 0.005;
+                    heart.rotation.x += deltaY * 0.005;
+                }
+                previousMousePosition = { x: e.clientX, y: e.clientY };
+            });
+
+            document.addEventListener('mouseup', () => {
+                isDragging = false;
+            });
+        }
+
+        function onWindowResize() {
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+
+            camera.aspect = width / height;
+            camera.updateProjectionMatrix();
+            renderer.setSize(width, height);
+        }
+
+        // Initialize MediaPipe Hand Landmarker
+        async function initHandTracking() {
+            const vision = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9/wasm"
+            );
+
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+                },
+                runningMode: "VIDEO",
+                numHands: 2,
+                minHandDetectionConfidence: 0.5,
+                minHandPresenceConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            startVideo();
+        }
+
+        function startVideo() {
+            const video = document.getElementById('video');
+            
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                navigator.mediaDevices.getUserMedia({
+                    video: { width: 320, height: 240 }
+                }).then(stream => {
+                    video.srcObject = stream;
+                    video.onloadedmetadata = () => {
+                        video.play();
+                        detectHands();
+                        updateStatus("Hand tracking active", "success");
+                    };
+                }).catch(error => {
+                    console.error("Camera access denied:", error);
+                    updateStatus("Camera access denied", "error");
+                });
+            }
+        }
+
+        function detectHands() {
+            const video = document.getElementById('video');
+            
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                const results = handLandmarker.detectForVideo(video, performance.now());
+                
+                handDetected = results.landmarks.length > 0;
+                closestHandDistance = Infinity;
+
+                // Process hand landmarks
+                for (let hand of results.landmarks) {
+                    // Get middle finger tip (index 12) and wrist (index 0)
+                    const fingerTip = hand[12]; // Middle finger tip
+                    const wrist = hand[0];
+
+                    // Calculate distance from center (rough estimate)
+                    const distanceFromCenter = Math.sqrt(
+                        Math.pow(fingerTip.x - 0.5, 2) +
+                        Math.pow(fingerTip.y - 0.5, 2) +
+                        Math.pow(fingerTip.z, 2)
+                    );
+
+                    closestHandDistance = Math.min(closestHandDistance, distanceFromCenter);
+                }
+
+                // Calculate target scale based on hand distance
+                if (handDetected) {
+                    // Normalize distance: closer = smaller scale, farther = larger scale
+                    // Distance range: 0 to ~0.7, Map to scale: 0.5 to 1.2
+                    targetScale = 0.5 + (closestHandDistance / 0.7) * 0.7;
+                    targetScale = Math.max(0.5, Math.min(1.5, targetScale));
+                } else {
+                    targetScale = 1.0;
+                }
+            }
+
+            requestAnimationFrame(detectHands);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Smoothly interpolate scale
+            if (heart) {
+                currentScale += (targetScale - currentScale) * 0.1;
+                heart.scale.set(0.03 * currentScale, 0.03 * currentScale, 0.03 * currentScale);
+
+                // Gentle rotation
+                if (!handDetected) {
+                    heart.rotation.z += 0.005;
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function updateStatus(message, type = 'info') {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.style.backgroundColor = 
+                type === 'error' ? 'rgba(255, 0, 0, 0.6)' :
+                type === 'success' ? 'rgba(0, 128, 0, 0.6)' :
+                'rgba(0, 0, 0, 0.6)';
+        }
+
+        // Start the application
+        window.addEventListener('load', () => {
+            initThreeJS();
+            initHandTracking();
+        });
+    </script>
+</body>
+</html>
